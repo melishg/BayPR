@@ -1,0 +1,282 @@
+---
+title: "Variant Prevalence Ratios - Example"
+author: "Josh Betz (https://github.com/jbetz-jhu) - JHU Biostatistics Center"
+date: "`r format(Sys.time(), '%Y-%m-%d %I:%M')`"
+output:
+  html_document:
+    pandoc_args: [--toc]
+
+---
+
+```{r Setup, echo = FALSE, message = FALSE}
+### IMPORTANT ##################################################################
+#
+# Modifying parameters outside of `USER MODIFIABLE PARAMETERS` section should
+# only be done by sophisticated users.
+#
+# 1. Users should fit their model using `bb.prevalence.ratio.mml` and
+# `bb.2c.mixture.grid.search` BEFORE using this report: this provides direct
+# access to the model fits and diagnostics. Once convergence has been assessed,
+# this report allows plotting of fitted results. Plots may not be well behaved
+# in the case where numerical overflow occurs (simulated values above 
+# `.Machine$double.xmax` will result in `Inf`). Users should also understand how
+# `r.k.factor` influences results: simulation may be helpful in this regard.
+#
+# 2. The input file should have column names that contain only letters, numbers,
+# periods, and underscores. Strip out any other characters to avoid naming
+# issues when data are loaded into R.
+#
+# 3. Sometimes columns appear blank in Excel, but they actually do contain data:
+# Delete rows below your last row of actual data, and columns to the right of
+# your last column of actual data to avoid potential issues.
+#
+# 4. This program uses five columns from your spreadsheet: the number of cases
+# observed (n.1),  the number of events among cases (y.1), the number of
+# controls observed (n.0), the number of events among controls (y.0), and the
+# variant ID (event.label). The event.label is a label for plotting and
+# arranging results: it can be whatever you want so long as each row is uniquely
+# identified. Long values may distort labeling of plots. Make sure they are
+# named according to step 1. Change the values of the column names to suit your
+# dataset.
+
+
+# all packages must be installed prior to use. See `?install.packages`
+
+library(dplyr)
+library(optimx)
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(ggplot2)
+library(gridExtra)
+library(openssl)
+library(scales)
+
+### USER MODIFIABLE PARAMETERS #################################################
+
+rng.seed <- 12345 # Use a RNG seed to reproduce results
+
+### Set Paths to Data ###
+
+data.dir <- # Folder containing case/control counts and sample sizes in .csv
+   file.path("Path", "to", "data")
+
+output.dir <- # Folder for spreadsheet of output
+   file.path("Path", "to", "output")
+
+input.file <- # Name of .csv file
+  "datasetname.csv"
+
+dataset.name <- "datasetname.csv" # Name for output file
+
+# Column names in spreadsheet as read in by R
+y.1 <- "y.1" # Column name of observed variants in cases
+y.0 <- "y.0" # Column name of observed variants in controls
+n.1 <- "n.1" # Column name of sample size in cases
+n.0 <- "n.0" # Column name of sample size in cases
+event.label <- "id" # ID of variant
+
+
+### CODE PARAMETERS ############################################################
+code.version <- "0.2" # Results are labeled with version
+
+## r_{k} ratio threshold - Exclude variants with large variation in r_{k}
+r.k.factor <- .25
+r.k.upper <- 1 + r.k.factor
+r.k.lower <- 1 - r.k.factor
+
+source.dir <- # Directory to source R code from
+   file.path("Path","to","sourcecode")
+
+# Name of R source files and Report Dependencies
+source.file <- "source-bayes_prevalence_ratio.r"
+report.body <- "report_body.Rmd"
+
+### Graphical Parameters ###
+
+# Plotting parameters for Posterior Distribution
+plot.n.variants <- 12 # Variants per plot
+h.separation <- 0.75 # Horizontal Separation
+
+# Divide up posterior quantiles into segments:
+plotted.quantiles <-
+  c(0.01, 0.025, 0.05, 0.1, 0.25, 0.5,
+    0.75, 0.9, 0.95, 0.975, 0.99)
+
+n.segments <- length(plotted.quantiles) - 1
+if(identical(n.segments %% 2, 0)){
+  interval.sizes <-
+    3*c(seq(from = 0.5, to = 1, length.out = n.segments/2), 
+      seq(from = 1, to = 0.5, length.out = n.segments/2))^2
+  interval.alpha <-
+    c(seq(from = 0.5, to = 1, length.out = n.segments/2), 
+      seq(from = 1, to = 0.5, length.out = n.segments/2))^2
+} else {
+  3*c(seq(from = 0.5, to = .9, length.out = n.segments/2), 1,
+      seq(from = 0.9, to = 0.5, length.out = n.segments/2))^2
+  interval.alpha <-
+    c(seq(from = 0.5, to = .9, length.out = floor(n.segments/2)), 1, 
+      seq(from = 0.9, to = .5, length.out = floor(n.segments/2)))^2
+}
+
+
+## Number of points to plot densities
+n.points <- 1e3
+
+## Number of simulations for plotting prior mixture
+n.mc.prior <- 1e6
+
+# Round parameter values for presentation
+param.digits <- 3
+
+# Maximum Value for plots
+min.theta <- 1e-3
+max.theta <- 1 - 1e-3
+min.theta.quantile <- 1e-3
+max.theta.quantile <- 1 - 1e-3
+
+min.gamma <- 1e-6
+max.gamma <- 1e6
+min.gamma.quantile <- 1e-3
+max.gamma.quantile <- 1 - 1e-3
+min.log.gamma <- -10
+max.log.gamma <- 10
+
+range.transform.threshold <- 100
+
+prior.y.max <- 500
+posterior.y.max <- 500
+posterior.y.min <- 1/500
+
+
+# Figure Width/Height Options
+fig.w.1x <- 6; fig.w.2x <- 12 
+fig.h.1x <- 6; fig.h.2x <- 12
+
+# Plotting parameters for axes, legends, titles, etc.
+axis.text.size <- 12
+axis.title.size <- 15
+legend.text.size <- 12
+legend.title.size <- 15
+
+
+
+### BEGIN PROGRAM ##############################################################
+set.seed(rng.seed)
+continue <- TRUE
+
+input.path <- # Create paths to input
+  file.path(data.dir, input.file)
+
+
+results.csv <- # Output file for result spreadsheet
+  paste0(dataset.name, "_Results_", r.k.factor, "_v", code.version, ".csv")
+
+
+beta.binom.rda.path <- # Output file for R Results
+  file.path(data.dir, paste0(dataset.name, "_", r.k.factor, "_v",
+                             code.version,  ".Rdata"))
+
+source.path <-
+  file.path(source.dir, source.file)
+
+if(file.exists(source.path)) {
+  source(file = source.path, echo = FALSE)
+} else {
+  stop("Could not locate ", source.file, " in ", source.dir)
+  continue <- FALSE
+}
+
+if(file.exists(source.path)) {
+  source(file = source.path, echo = FALSE)
+} else {
+  stop("Could not locate ", source.file, " in ", source.dir)
+  continue <- FALSE
+}
+
+if(file.exists(beta.binom.rda.path)){
+  
+  load(beta.binom.rda.path)
+  run.beta.binom <- FALSE
+  
+} else if(continue){
+  
+  run.beta.binom <- TRUE
+  
+  if(file.exists(input.path)) {
+    # Read in data
+    input.data <-
+      read.csv(file = input.path, stringsAsFactors = FALSE)
+    
+    # Get input characteristics, SHA256 fingerprint
+    input.info <- file.info(input.path)
+    input.size <- input.info$size/1e6 # size in Megabytes
+    input.modified <- input.info$mtime
+    input.sha256 <- sha256(x = file(input.path))
+    
+    input.data.all <-
+      input.data <-
+      input.data %>%
+      dplyr::mutate(include =
+                      # Not flagged to exclude
+                      tolower(flag) != "exclude" &
+                      # At least one case and one control observed
+                      (get(!!n.0) > 0 & get(!!n.1) > 0) &
+                      # At least one variant in cases OR controls
+                      (is.finite(get(!!y.0)) & is.finite(get(!!y.1))) &
+                      (get(!!y.0) > 0 | get(!!y.1) > 0),
+                    # Check to see if Y > N
+                    error.cases = get(!!y.1) > get(!!n.1),
+                    error.controls = get(!!y.0) > get(!!n.0))
+    
+    included.variants <- sum(input.data$include)
+    excluded.variants <- sum(!input.data$include)
+    
+    input.data <-
+      input.data %>%
+      dplyr::filter(include == TRUE) %>%
+      dplyr::mutate(t.k = # Number of events in Cases/Controls
+                      get(!!y.1)/get(!!y.0),
+                    r.k = # Case/Control sample size ratio
+                      get(!!n.1)/get(!!n.0),
+                    r.k.ratio = # Median ratio over SNPs
+                      r.k/median(r.k, na.rm = TRUE),
+                    r.k.ratio.flag = r.k.ratio < r.k.lower |
+                      r.k.ratio > r.k.upper)
+    
+    input.data.excluded <-
+      input.data.all %>%
+      dplyr::filter(!get(x = !!event.label) %in%
+                      get(x = !!event.label,
+                          pos = input.data))
+    
+    # Check for counts greater than number of observations
+    if(sum(input.data$error.cases, na.rm = TRUE) > 0) {
+      continue <- FALSE
+      stop("Counts greater than number of observation in cases")
+    }
+    
+    if(sum(input.data$error.controls, na.rm = TRUE) > 0) {
+      continue <- FALSE
+      stop("Counts greater than number of observation in controls")
+    }
+  } else {
+    stop("Could not locate ", input.file, " in ", data.dir)
+    continue <- FALSE
+  }
+}
+
+
+knitr::opts_chunk$set(echo = FALSE,
+                      results = "hide",
+                      fig.width = fig.w.1x,
+                      fig.height = fig.h.1x,
+                      # dev = "CairoPNG",
+                      fig.height = fig.h.1x)
+
+```
+
+
+
+```{r Report_Body, child = report.body}
+```

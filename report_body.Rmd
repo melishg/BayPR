@@ -1,0 +1,1209 @@
+## Data Utilized
+
+The following file was used: `r input.file`
+
+  - Size: `r input.size` Mb
+  - Modified: `r input.modified`
+  - SHA256: `r input.sha256`
+
+### Variants Removed - `r dataset.name`
+
+Let $n_{1k}$ denote the number of cases assessed for variant $k$, and $n_{0k}$ denote the number of controls assessed for variant $k$. Since the beta binomial model depends on $r_{k} = n_{1}/n_{0}$, the ratio of these two quantities, variants may be removed if their relative sample size varies considerably from other variants. Let $r_{50\%}$ denote the median value of $r_{k}$ across each of the $k$ variants: a given variant $r_{j}$ is removed if $r_{j}/r_{50\%}$ exceeds `r r.k.upper` (1 + `r r.k.factor`)  or falls below `r r.k.lower`  (1 - `r r.k.factor`).
+
+```{r Variants Removed, results = 'asis', eval = continue}
+kable(input.data.excluded)
+```
+
+
+## Variation in $r_{k}$
+
+The transformation from the beta prior to the prevalence ratio scale depends on the relative sample size. Plots show this transformation using the minimum, median, and maximum values of $r_{k}$. In some cases, the median may be the minimum, maximum, or both (if $r_{k}$ is the same across all variants). In these cases, there may be less than three plots of the prevalence ratio scale.
+
+
+## Empirical Bayes Beta Binomial Models
+
+```{r Open Existing Results, eval = !run.beta.binom & continue, echo = FALSE}
+load(file = beta.binom.rda.path)
+```
+
+```{r Get Model Estimates, eval = run.beta.binom & continue}
+beta.binom.mm <-
+  bb.prevalence.ratio.mm(data = input.data,
+                         y.0 = y.0, y.1 = y.1,
+                         n.0 = n.0, n.1 = n.1,
+                         id = event.label)
+
+beta.binom.mml <-
+  bb.prevalence.ratio.mml(data = input.data,
+                          y.0 = y.0, y.1 = y.1,
+                          n.0 = n.0, n.1 = n.1,
+                          id = event.label)
+
+beta.binom.mml.mix <-
+  bb.2c.mixture.grid.search(data = input.data,
+                            y.0 = y.0, y.1 = y.1,
+                            n.0 = n.0, n.1 = n.1,
+                            id = event.label)
+```
+
+```{r Plot Preparations, eval = continue}
+r.k.summary <-
+  beta.binom.mm$results %>%
+  dplyr::summarize(`$r_{k}$: Minimum` = min(r.k),
+                   `$r_{k}$: Mean` = mean(r.k),
+                   `$r_{k}$: Median` = median(r.k),
+                   `$r_{k}$: Maximum` = max(r.k)) %>%
+  data.frame(check.names = FALSE)
+
+beta.binom.results <-
+  full_join(x = beta.binom.mm$results %>%
+              dplyr::mutate(pi.0 = y.0/n.0,
+                            pi.1 = y.1/n.1,
+                            gamma.hat = pi.1/pi.0),
+            y = beta.binom.mml$results,
+            by = c("id", "y.0", "n.0", "y.1", "n.1", "t.k", "r.k")) %>%
+  full_join(x = .,
+            y = beta.binom.mml.mix$results,
+            by = c("id", "y.0", "n.0", "y.1", "n.1", "t.k", "r.k")) %>%
+  dplyr::mutate(mean_of_posterior_medians =
+                  (gamma.mm_pq.0.5 + gamma.mml_pq.0.5 +
+                     gamma.2c_pq.0.5)/3) %>%
+  dplyr::mutate(plot.order = rank(mean_of_posterior_medians,
+                                  ties.method = "random"),
+                plot.group = floor(plot.order/plot.n.variants)) %>%
+  tidyr::gather(key = key, value = value, 
+                starts_with("gamma."), -gamma.hat) %>%
+  tidyr::separate(col = key, into = c("estimation.method","estimator"),
+                  sep = "_", extra = "merge") %>%
+  tidyr::separate(col = estimation.method,
+                  into = c("parameter", "model"), extra = "merge") %>%
+  tidyr::spread(key = estimator, value = value) %>%
+  dplyr::arrange(-plot.order) %>%
+  dplyr::mutate(id = factor(id),
+                model = factor(x = model,
+                               levels = c("mm", "mml", "2c"),
+                               labels = c("BB-MM", "BB-MML", "BB Mixture")))
+
+write.csv(x = beta.binom.results,
+          file = file.path(output.dir, results.csv),
+          row.names = FALSE)
+
+plotoutput <- # Output file for result spreadsheet
+  paste0(output.dir, "/", dataset.name, "_Results_", r.k.factor, "_v", code.version, ".png")
+png(plotoutput)
+ggplot(beta.binom.results, aes(x = 1- posterior.probability.2, y = y.1)) + geom_point() +
+    scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x),
+                  labels = trans_format("log10", math_format(10^.x))) + ylab("y.1") + xlab("Probability of 'Disease'") + ggtitle(dataset.name)
+    theme_bw()
+dev.off()
+```
+
+```{r Save Results, eval = run.beta.binom & continue, echo = FALSE}
+save(input.data, input.data.all, input.data.excluded,
+     input.size, input.modified, input.sha256,
+     beta.binom.mm, beta.binom.mml, beta.binom.mml.mix,
+     beta.binom.results, r.k.summary,
+     file = beta.binom.rda.path)
+```
+
+
+
+
+
+## Beta-Binomial Model - Single Component
+
+### Method of Moments Estimates:
+
+```{r set_defaults_single_component}
+alpha.mm <- beta.mm <- alpha.mml <- beta.mml <- 
+  mean.theta.mm <- var.theta.mm <- mean.theta.mml <- var.theta.mml <-
+r.k.min <- r.k.med <- r.k.max <- 
+  mean.gamma.min.mm <- mean.gamma.min.mml <-
+  mean.gamma.med.mm <- mean.gamma.med.mml <-
+  mean.gamma.max.mm <- mean.gamma.max.mml <-
+  var.gamma.min.mm <- var.gamma.min.mml <-
+  var.gamma.med.mm <- var.gamma.med.mml <-
+  var.gamma.max.mm <- var.gamma.max.mml <- NA
+```
+
+
+
+```{r Single_Component_Parameters, eval = continue}
+r.k.min <- r.k.summary$`$r_{k}$: Minimum`
+r.k.med <- r.k.summary$`$r_{k}$: Median`
+r.k.max <- r.k.summary$`$r_{k}$: Maximum`
+
+alpha.mm <- beta.binom.mm$alpha.mm
+beta.mm <- beta.binom.mm$beta.mm
+
+mm.exists <-
+  is.finite(alpha.mm) & is.finite(beta.mm) &
+  alpha.mm > 0 & beta.mm > 0
+
+if (mm.exists) {
+  mean.theta.mm <-
+    alpha.mm/(alpha.mm + beta.mm)
+  
+  var.theta.mm <- 
+    (alpha.mm*beta.mm)/((alpha.mm + beta.mm)^2*(alpha.mm + beta.mm + 1))
+
+  mean.gamma.mm <- alpha.mm/(beta.mm - 1)
+  var.gamma.mm <-
+    alpha.mm*(alpha.mm + beta.mm - 1)/((beta.mm - 2)*(beta.mm - 1)^2)
+  
+  if(beta.mm > 1){
+    mean.gamma.min.mm <- mean.gamma.mm/r.k.min
+    mean.gamma.med.mm <- mean.gamma.mm/r.k.med
+    mean.gamma.max.mm <- mean.gamma.mm/r.k.max
+  } else {
+    mean.gamma.min.mm <- mean.gamma.med.mm <- mean.gamma.max.mm <- NaN
+  }
+  
+  if(beta.mm > 2){
+    var.gamma.min.mm <- var.gamma.mm/r.k.min^2
+    var.gamma.med.mm <- var.gamma.mm/r.k.med^2
+    var.gamma.max.mm <- var.gamma.mm/r.k.max^2
+  } else {
+    var.gamma.min.mm <- var.gamma.med.mm <- var.gamma.max.mm <- NaN
+  }
+  
+} else {
+  mean.theta.mm <- var.theta.mm <-
+    mean.gamma.min.mm <- mean.gamma.med.mm <- mean.gamma.max.mm <-
+    var.gamma.min.mm <- var.gamma.med.mm <- var.gamma.max.mm <- NaN
+}
+
+
+alpha.mml <- beta.binom.mml$alpha.mml
+beta.mml <- beta.binom.mml$beta.mml
+
+mml.exists <-
+  is.finite(alpha.mml) & is.finite(beta.mml)
+
+if (mml.exists) {
+  mean.theta.mml <-
+    alpha.mml/(alpha.mml + beta.mml)
+  var.theta.mml <- 
+    (alpha.mml*beta.mml)/((alpha.mml + beta.mml)^2*(alpha.mml + beta.mml + 1))
+  
+  mean.gamma.mml <- alpha.mml/(beta.mml - 1)
+  var.gamma.mml <-
+    alpha.mml*(alpha.mml + beta.mml - 1)/((beta.mml - 2)*(beta.mml - 1)^2)
+  
+  if(beta.mml > 1){
+    mean.gamma.min.mml <- mean.gamma.mml/r.k.min
+    mean.gamma.med.mml <- mean.gamma.mml/r.k.med
+    mean.gamma.max.mml <- mean.gamma.mml/r.k.max
+  } else {
+    mean.gamma.min.mml <- mean.gamma.med.mml <- mean.gamma.max.mml <- NaN
+  }
+  
+  if(beta.mml > 2){
+    var.gamma.min.mml <- var.gamma.mml/r.k.min^2
+    var.gamma.med.mml <- var.gamma.mml/r.k.med^2
+    var.gamma.max.mml <- var.gamma.mml/r.k.max^2
+  } else {
+    var.gamma.min.mml <- var.gamma.med.mml <- var.gamma.max.mml <- NaN
+  }
+  
+}
+
+```
+
+
+
+### Single Component Beta Binomial Model
+
+#### Estimates of Hyperparameters
+
+The transformation to the prevalence ratio scale depends on the ratio of sample size in cases relative to controls, which may differ across variants. The mean and variance of the posterior distribution of the prevalence ratio is given for the minimum, median, and maximum values of this ratio.
+
+  - Beta Binomial: Method of Moments Estimator (MM)
+    - Beta Distribution: $\hat{\alpha}_{MM}$= `r round(alpha.mm, param.digits)`, $\hat{\beta}_{MM}$= `r beta.mm`
+      - Prior Mean: `r mean.theta.mm`, Prior Variance: `r var.theta.mm`
+    - On Prevalence Ratio Scale:
+      - $r_{k}$ range: Minimum = `r r.k.min` / Median = `r r.k.med` / Maximum = `r r.k.max` 
+      - Prior Mean: `r mean.gamma.min.mm` / `r mean.gamma.med.mm` / `r mean.gamma.max.mm`
+      - Prior Variance: `r var.gamma.min.mm` / `r var.gamma.med.mm` / `r var.gamma.max.mm` 
+
+  - Beta Binomial: Marginal Maximum Likelihood (MML)
+    - Beta Distribution: $\hat{\alpha}_{MML}$= `r alpha.mml`, $\hat{\beta}_{MML}$= `r beta.mml`
+      - Prior Mean: `r mean.theta.mml`, Prior Variance: `r var.theta.mml`
+    - On Prevalence Ratio Scale:
+      - $r_{k}$ range: Minimum = `r r.k.min` / Median = `r r.k.med` / Maximum = `r r.k.max` 
+      - Prior Mean: `r mean.gamma.min.mml` / `r mean.gamma.med.mml` / `r mean.gamma.max.mml`
+      - Prior Variance: `r var.gamma.min.mml` / `r var.gamma.med.mml` / `r var.gamma.max.mml`
+
+Note that the mean on the prevalence ratio scale is only finite if $\beta > 1$ and a its variance is only finite if $\beta > 2$.
+
+```{r Prior-MM, fig.width = fig.w.2x, eval = continue & mm.exists}
+alpha.1.mm <- beta.binom.mm$alpha.mm
+beta.1.mm <- beta.binom.mm$beta.mm
+
+r.k.range <-
+  with(beta.binom.mm$results, c(min(r.k), median(r.k), max(r.k)))
+
+r.k.range <- round(x = r.k.range, digits = param.digits)
+
+theta.range.mm <-
+  qbeta(p = c(min.theta.quantile, max.theta.quantile),
+        shape1 = alpha.1.mm, shape2 = beta.1.mm)
+
+# Since transformation becomes unbounded at 1, restrict plotting range
+theta.range.mm <-
+  c(pmax(theta.range.mm[1], min.theta),
+    pmin(theta.range.mm[2], max.theta))
+
+# Get quantiles of transformed thetas
+thetas.mm <-
+  rbeta(n = 1e6, shape1 = alpha.1.mm, shape2 = beta.1.mm)
+
+# Determine scale of gamma - May not be finite. Adjust as necessary
+log.transform.gamma.mm <- FALSE
+gamma.range.mm <- NA
+gamma.range.mm[1] <- 
+  pmin(quantile(x = thetas.mm/(r.k.range[1]*(1 - thetas.mm)),
+                p = min.gamma.quantile),
+       quantile(x = thetas.mm/(r.k.range[3]*(1 - thetas.mm)),
+                p = min.gamma.quantile))
+gamma.range.mm[2] <- 
+  pmax(quantile(x = thetas.mm/(r.k.range[1]*(1 - thetas.mm)),
+                p = max.gamma.quantile),
+       quantile(x = thetas.mm/(r.k.range[3]*(1 - thetas.mm)),
+                p = max.gamma.quantile))
+
+if(diff(gamma.range.mm) > range.transform.threshold |
+     sum(is.infinite(gamma.range.mm)) > 0) {
+  log.transform.gamma.mm <- TRUE
+  gamma.range.mm[1] <- 
+    pmin(quantile(x = log(thetas.mm) - log(r.k.range[1]*(1 - thetas.mm)),
+                  p = min.gamma.quantile),
+         quantile(x = thetas.mm/(r.k.range[3]*(1 - thetas.mm)),
+                  p = min.gamma.quantile))
+  gamma.range.mm[2] <- 
+    pmax(quantile(x = log(thetas.mm) - log(r.k.range[1]*(1 - thetas.mm)),
+                  p = max.gamma.quantile),
+         quantile(x = thetas.mm/(r.k.range[3]*(1 - thetas.mm)),
+                  p = max.gamma.quantile))
+  gamma.range.mm <-
+    c(pmax(gamma.range.mm[1], min.log.gamma),
+      pmin(gamma.range.mm[2], max.log.gamma))
+  
+  if(is.infinite(gamma.range.mm[1])) gamma.range.mm[1] <- min.log.gamma
+}
+
+prior.theta.mm <-
+  data.frame(theta = seq(from = theta.range.mm[1],
+                         to = theta.range.mm[2],
+                         length.out = n.points),
+             method = "MM", stringsAsFactors = FALSE) %>%
+  dplyr::mutate(d.theta = dbeta(x = theta, shape1 = alpha.1.mm,
+                                shape2 = beta.1.mm))
+prior.gamma.mm <-
+  data.frame(expand.grid(gamma = seq(from = gamma.range.mm[1],
+                                     to = gamma.range.mm[2],
+                                     length.out = n.points),
+                         r.k = r.k.range),
+             method = "MM", stringsAsFactors = FALSE) %>%
+  dplyr::mutate(d.gamma = 
+                  if(log.transform.gamma.mm){
+                    d.log.pr(x = gamma, shape1 = alpha.1.mm, 
+                             shape2 = beta.1.mm, r = r.k)
+                  } else {
+                    d.pr(x = gamma, shape1 = alpha.1.mm, 
+                         shape2 = beta.1.mm, r = r.k) 
+                  }) %>%
+  dplyr::mutate(r.k = factor(r.k))
+
+prior.theta.max.mm <-
+  pmin(prior.y.max, 
+       prior.theta.mm %>%
+         dplyr::filter(method == "MM") %>%
+         dplyr::pull(d.theta) %>%
+         max)
+
+prior.gamma.max.mm <-
+  pmin(prior.y.max, 
+       prior.gamma.mm %>%
+         dplyr::filter(method == "MM") %>%
+         dplyr::pull(d.gamma) %>%
+         max)
+
+p1 <-
+  ggplot(data = prior.theta.mm) + 
+  geom_ribbon(aes(ymax = d.theta,
+                  ymin = 0,
+                  x = theta),
+              alpha = 0.5) +
+  theme_bw() +
+  coord_cartesian(ylim = c(0, prior.theta.max.mm)) +
+  ylab(expression(paste("Probability Density: f(",
+                        theta[k], "|", alpha,~beta, ")"))) +
+  xlab(expression(paste("Transformed Prevalence Ratio: ", theta[k], "=", 
+                        frac(r[k]~gamma[k], (1 + r[k]~gamma[k]))))) +
+  theme(legend.position = "bottom") +
+  ggtitle(bquote(paste("Pr{", theta, "|", alpha, " = ", .(alpha.1.mm),
+                       ", ", beta, " = ", .(beta.1.mm),
+                       "} - MM")))
+
+gamma.x.label <-
+  ifelse(test = log.transform.gamma.mm,
+         yes = expression(paste("Prevalence Ratio: ", log(gamma[k]), "=", 
+                        log(theta[k]/r[k]~(1 - theta[k])))),
+         no = expression(paste("Prevalence Ratio: ", gamma[k], "=", 
+                        frac(theta[k], r[k]~(1 - theta[k])))))
+  
+gamma.y.label <-
+  ifelse(test = log.transform.gamma.mm,
+         yes = expression(paste("Probability Density: g(log(",
+                 gamma[k], ")|", alpha,~beta,~r[k], ")")),
+         no = expression(paste("Probability Density: g(",
+                               gamma[k], "|", alpha,~beta,~r[k], ")")))
+
+  
+p2 <-
+  ggplot(data = prior.gamma.mm,
+         aes(y = d.gamma,
+             x = gamma,
+             group = r.k,
+             col = r.k)) +
+  geom_line() +
+  theme_bw() +
+  coord_cartesian(ylim = c(0, prior.gamma.max.mm)) +
+  ylab(gamma.y.label) +
+  xlab(gamma.x.label) +
+  theme(legend.position = "bottom") +
+  ggtitle(bquote(paste("Pr{", gamma[k], "|", alpha, " = ", .(alpha.1.mm),
+                       ", ", beta, " = ", .(beta.1.mm), "} - MM")))
+
+grid.arrange(p1, p2, nrow = 1, ncol = 2)
+```
+
+
+```{r Prior-MML, fig.width = fig.w.2x, eval = continue & mml.exists}
+alpha.1.mml <- beta.binom.mml$alpha.mml
+beta.1.mml <- beta.binom.mml$beta.mml
+
+r.k.range <-
+  with(beta.binom.mml$results, c(min(r.k), median(r.k), max(r.k)))
+
+r.k.range <- round(x = r.k.range, digits = param.digits)
+
+theta.range.mml <-
+  qbeta(p = c(min.theta.quantile, max.theta.quantile),
+        shape1 = alpha.1.mml, shape2 = beta.1.mml)
+
+# Since transformation becomes unbounded at 1, restrict plotting range
+theta.range.mml <-
+  c(pmax(theta.range.mml[1], min.theta),
+    pmin(theta.range.mml[2], max.theta))
+
+
+# Get quantiles of transformed thetas
+thetas.mml <-
+  rbeta(n = 1e6, shape1 = alpha.1.mml, shape2 = beta.1.mml)
+
+n.finite.gammas <- sum(!(thetas.mml %in% 0:1))
+
+prior.theta.mml <-
+  data.frame(theta = seq(from = theta.range.mml[1],
+                         to = theta.range.mml[2],
+                         length.out = n.points),
+             method = "MML", stringsAsFactors = FALSE) %>%
+  dplyr::mutate(d.theta = dbeta(x = theta, shape1 = alpha.1.mml,
+                                shape2 = beta.1.mml))
+
+prior.theta.max.mml <-
+    pmin(prior.y.max, 
+         prior.theta.mml %>%
+           dplyr::filter(method == "MML") %>%
+           dplyr::pull(d.theta) %>%
+           max)
+
+
+if(n.finite.gammas < 1) {
+  prior.gamma.mml <-
+    expand.grid(gamma = seq(min.log.gamma, max.log.gamma, length.out = 10),
+                d.gamma = NaN,
+                method = "MML",
+                r.k = r.k.range) %>%
+    dplyr::mutate(r.k = factor(x = r.k))
+  
+  log.transform.gamma.mml <- TRUE
+  prior.gamma.max.mml <- Inf
+    
+} else {
+  # Determine scale of gamma - May not be finite. Adjust as necessary
+  log.transform.gamma.mml <- FALSE
+  gamma.range.mml <- NA
+  gamma.range.mml[1] <- 
+    pmin(quantile(x = thetas.mml/(r.k.range[1]*(1 - thetas.mml)),
+                  p = min.gamma.quantile),
+         quantile(x = thetas.mml/(r.k.range[3]*(1 - thetas.mml)),
+                  p = min.gamma.quantile))
+  gamma.range.mml[2] <- 
+    pmax(quantile(x = thetas.mml/(r.k.range[1]*(1 - thetas.mml)),
+                  p = max.gamma.quantile),
+         quantile(x = thetas.mml/(r.k.range[3]*(1 - thetas.mml)),
+                  p = max.gamma.quantile))
+  
+  if(diff(gamma.range.mml) > range.transform.threshold |
+     sum(is.infinite(gamma.range.mml)) > 0) {
+    log.transform.gamma.mml <- TRUE
+    gamma.range.mml[1] <- 
+      pmin(quantile(x = log(thetas.mml) - log(r.k.range[1]*(1 - thetas.mml)),
+                    p = min.gamma.quantile),
+           quantile(x = thetas.mml/(r.k.range[3]*(1 - thetas.mml)),
+                    p = min.gamma.quantile))
+    gamma.range.mml[2] <- 
+      pmax(quantile(x = log(thetas.mml) - log(r.k.range[1]*(1 - thetas.mml)),
+                    p = max.gamma.quantile),
+           quantile(x = thetas.mml/(r.k.range[3]*(1 - thetas.mml)),
+                    p = max.gamma.quantile))
+    gamma.range.mml <-
+      c(pmax(gamma.range.mml[1], min.log.gamma),
+        pmin(gamma.range.mml[2], max.log.gamma))
+    
+    if(is.infinite(gamma.range.mml[1])) gamma.range.mml[1] <- min.log.gamma
+  }
+  
+  prior.gamma.mml <- 
+    data.frame(expand.grid(gamma = seq(from = gamma.range.mml[1],
+                                       to = gamma.range.mml[2],
+                                       length.out = n.points),
+                           r.k = r.k.range),
+               method = "MML", stringsAsFactors = FALSE) %>%
+    dplyr::mutate(d.gamma = 
+                    if(log.transform.gamma.mml){
+                      d.log.pr(x = gamma, shape1 = alpha.1.mml, 
+                               shape2 = beta.1.mml, r = r.k)
+                    } else {
+                      d.pr(x = gamma, shape1 = alpha.1.mml, 
+                           shape2 = beta.1.mml, r = r.k) 
+                    }) %>%
+    dplyr::mutate(r.k = factor(r.k))
+  
+  prior.gamma.max.mml <-
+    pmin(prior.y.max, 
+         prior.gamma.mml %>%
+           dplyr::filter(method == "MML") %>%
+           dplyr::pull(d.gamma) %>%
+           max)
+  
+}
+
+
+alpha.1.mml <- beta.binom.mml$alpha.mml
+beta.1.mml <- beta.binom.mml$beta.mml
+
+
+p3 <-
+  ggplot(data = prior.theta.mml) +
+  geom_ribbon(aes(ymax = d.theta,
+                  ymin = 0,
+                  x = theta),
+              alpha = 0.5) +
+  theme_bw() +
+  coord_cartesian(ylim = c(0, prior.theta.max.mml)) +
+  ylab(expression(paste("Probability Density: f(",
+                        theta[k], "|", alpha,~beta, ")"))) +
+  xlab(expression(paste("Transformed Prevalence Ratio: ", theta[k], "=", 
+                        frac(r[k]~gamma[k], (1 + r[k]~gamma[k]))))) +
+  theme(legend.position = "bottom") +
+  ggtitle(bquote(paste("Pr{", theta, "|", alpha, " = ", .(alpha.1.mml),
+                       ", ", beta, " = ", .(beta.1.mml),
+                       "} - MML")))
+
+gamma.x.label <-
+  ifelse(test = log.transform.gamma.mml,
+         yes = expression(paste("Prevalence Ratio: ", log(gamma[k]), "=", 
+                        log(theta[k]/r[k]~(1 - theta[k])))),
+         no = expression(paste("Prevalence Ratio: ", gamma[k], "=", 
+                        frac(theta[k], r[k]~(1 - theta[k])))))
+  
+gamma.y.label <-
+  ifelse(test = log.transform.gamma.mml,
+         yes = expression(paste("Probability Density: g(log(",
+                 gamma[k], ")|", alpha,~beta,~r[k], ")")),
+         no = expression(paste("Probability Density: g(",
+                               gamma[k], "|", alpha,~beta,~r[k], ")")))
+
+p4 <-
+  ggplot(data = prior.gamma.mml,
+         aes(y = d.gamma,
+             x = gamma,
+             group = r.k,
+             col = r.k)) +
+  geom_line() +
+  theme_bw() +
+  coord_cartesian(ylim = c(0, prior.gamma.max.mml)) +
+  ylab(gamma.y.label) +
+  xlab(gamma.x.label) +
+  theme(legend.position = "bottom") +
+  ggtitle(bquote(paste("Pr{", gamma[k], "|", alpha, " = ", .(alpha.1.mml),
+                       ", ", beta, " = ", .(beta.1.mml), "} - MML")))
+
+grid.arrange(p3, p4, nrow = 1, ncol = 2)
+```
+
+
+Note: plots on the log scale may be truncated to the interval [-10, 10].
+
+
+
+### Two-Component Beta Binomial Mixture Model
+
+#### Estimates of Hyperparameters
+
+```{r set_defaults_mixture}
+alpha.1 <- beta.1 <- alpha.2 <- beta.2 <- 
+  mean.theta.1 <- var.theta.1 <- mean.theta.2 <- var.theta.2 <-
+  mean.gamma.min.1 <- mean.gamma.min.2 <-
+  mean.gamma.med.1 <- mean.gamma.med.2 <-
+  mean.gamma.max.1 <- mean.gamma.max.2 <-
+  var.gamma.min.1 <- var.gamma.min.2 <-
+  var.gamma.med.1 <- var.gamma.med.2 <-
+  var.gamma.max.1 <- var.gamma.max.2 <- epsilon.hat <- 
+  mean.gamma.mix.min <- mean.gamma.mix.med <- mean.gamma.mix.max <-
+  var.gamma.mix.min <- var.gamma.mix.med <- var.gamma.mix.max <- NA
+```
+
+
+
+```{r Mixture_Component_Parameters}
+alpha.1 <- beta.binom.mml.mix$parameters["alpha.1"]
+beta.1 <- beta.binom.mml.mix$parameters["beta.1"]
+
+alpha.2 <- beta.binom.mml.mix$parameters["alpha.2"]
+beta.2 <- beta.binom.mml.mix$parameters["beta.2"]
+
+epsilon.hat <- beta.binom.mml.mix$parameters["epsilon"]
+
+mean.theta.1 <- alpha.1/(alpha.1 + beta.1)
+var.theta.1 <- 
+  (alpha.1*beta.1)/((alpha.1 + beta.1)^2*(alpha.1 + beta.1 + 1))
+
+mean.theta.2 <- alpha.2/(alpha.2 + beta.2)
+var.theta.2 <- 
+  (alpha.2*beta.2)/((alpha.2 + beta.2)^2*(alpha.2 + beta.2 + 1))
+
+mean.theta.mix <-
+  (1 - epsilon.hat)*mean.theta.1 + (epsilon.hat)*mean.theta.2
+
+var.theta.mix <-
+  (1 - epsilon.hat)*(mean.theta.1^2 + var.theta.1^2 - mean.theta.mix^2) + 
+  (epsilon.hat)*(mean.theta.2^2 + var.theta.2^2 - mean.theta.mix^2)
+
+mean.gamma.1 <- alpha.1/(beta.1 - 1)
+var.gamma.1 <-
+  alpha.1*(alpha.1 + beta.1 - 1)/((beta.1 - 2)*(beta.1 - 1)^2)
+
+if(beta.1 > 1){
+  mean.gamma.min.1 <- mean.gamma.1/r.k.min
+  mean.gamma.med.1 <- mean.gamma.1/r.k.med
+  mean.gamma.max.1 <- mean.gamma.1/r.k.max
+} else {
+  mean.gamma.min.1 <- mean.gamma.med.1 <- mean.gamma.max.1 <- NaN
+}
+
+if(beta.1 > 2){
+  var.gamma.min.1 <- var.gamma.1/r.k.min^2
+  var.gamma.med.1 <- var.gamma.1/r.k.med^2
+  var.gamma.max.1 <- var.gamma.1/r.k.max^2
+} else {
+  var.gamma.min.1 <- var.gamma.med.1 <- var.gamma.max.1 <- NaN
+}
+
+mean.gamma.2 <- alpha.2/(beta.2 - 1)
+var.gamma.2 <-
+  alpha.2*(alpha.2 + beta.2 - 1)/((beta.2 - 2)*(beta.2 - 1)^2)
+
+gammas <-
+  c(rbeta(n = round(n.mc.prior*(1 - epsilon.hat)),
+          shape1 = alpha.1, shape2 = beta.1),
+    rbeta(n = n.mc.prior - round(n.mc.prior*(1 - epsilon.hat)),
+          shape1 = alpha.2, shape2 = beta.2))
+gammas <-
+  gammas/(1 - gammas)
+
+mean.gamma.mix.min <-
+  round(x = mean(gammas)/r.k.min, digits = param.digits)
+var.gamma.mix.min <-
+  round(x = var(gammas)/r.k.min^2, digits = param.digits)
+
+mean.gamma.mix.med <-
+  round(x = mean(gammas)/r.k.med, digits = param.digits)
+var.gamma.mix.med <-
+  round(x = var(gammas)/r.k.med^2, digits = param.digits)
+
+mean.gamma.mix.max <-
+  round(x = mean(gammas)/r.k.max, digits = param.digits)
+var.gamma.mix.max <-
+  round(x = var(gammas)/r.k.max^2, digits = param.digits)
+
+
+if(beta.2 > 1){
+  mean.gamma.min.2 <- mean.gamma.2/r.k.min
+  mean.gamma.med.2 <- mean.gamma.2/r.k.med
+  mean.gamma.max.2 <- mean.gamma.2/r.k.max
+} else {
+  mean.gamma.min.2 <- mean.gamma.med.2 <- mean.gamma.max.2 <- NaN
+}
+
+if(beta.2 > 2){
+  var.gamma.min.2 <- var.gamma.2/r.k.min^2
+  var.gamma.med.2 <- var.gamma.2/r.k.med^2
+  var.gamma.max.2 <- var.gamma.2/r.k.max^2
+} else {
+  var.gamma.min.2 <- var.gamma.med.2 <- var.gamma.max.2 <- NaN
+}
+```
+
+
+
+  - Beta Distribution 1: $\hat{\alpha}_{1}$: `r round(alpha.1, param.digits)`, $\hat{\beta}_{1}$: `r round(beta.1, param.digits)`
+    - Prior Mean: `r round(mean.theta.1, param.digits)`, Prior Variance: `r round(var.theta.1, param.digits)`
+    - On Prevalence Ratio Scale:
+      - $r_{k}$ range: Minimum = `r round(r.k.min, param.digits)` / Median = `r round(r.k.med, param.digits)` / Maximum = `r round(r.k.max, param.digits)` 
+      - Prior Mean: `r round(mean.gamma.min.1, param.digits)` / `r round(mean.gamma.med.1, param.digits)` / `r round(mean.gamma.max.1, param.digits)`
+      - Prior Variance: `r round(var.gamma.min.1, param.digits)` / `r round(var.gamma.med.1, param.digits)` / `r round(var.gamma.max.1, param.digits)`
+
+
+  - Beta Distribution 2: $\hat{\alpha}_{2}$: `r round(alpha.2, param.digits)`, $\hat{\beta}_{2}$: `r round(beta.2, param.digits)`
+    - Prior Mean: `r round(mean.theta.2, param.digits)`, Prior Variance: `r round(var.theta.2, param.digits)`
+    - On Prevalence Ratio Scale:
+      - $r_{k}$ range: Minimum = `r round(r.k.min, param.digits)` / Median = `r round(r.k.med, param.digits)` / Maximum = `r round(r.k.max, param.digits)` 
+      - Prior Mean: `r round(mean.gamma.min.2, param.digits)` / `r round(mean.gamma.med.2, param.digits)` / `r round(mean.gamma.max.2, param.digits)`
+      - Prior Variance: `r round(var.gamma.min.2, param.digits)` / `r round(var.gamma.med.2, param.digits)` / `r round(var.gamma.max.2, param.digits)`
+      
+  - Mixture Distribution:
+    - Proportion from Component 2 $\hat{\epsilon}$: `r round(epsilon.hat, param.digits)`
+    - On Prevalence Ratio Scale:
+      - $r_{k}$ range: Minimum = `r round(r.k.min, param.digits)` / Median = `r round(r.k.med, param.digits)` / Maximum = `r round(r.k.max, param.digits)` 
+      - Prior Mean: `r round(mean.gamma.mix.min, param.digits)` / `r round(mean.gamma.mix.med, param.digits)` / `r round(mean.gamma.mix.max, param.digits)`
+      - Prior Variance: `r round(var.gamma.mix.min, param.digits)` / `r round(var.gamma.mix.med, param.digits)` / `r round(var.gamma.mix.max, param.digits)`
+      
+Note that the mean on the prevalence ratio scale is only finite if $\beta > 1$ and a its variance is only finite if $\beta > 2$.
+
+
+
+
+
+```{r Prior Mixture Distributions, fig.width = fig.w.2x}
+theta.range.1 <-
+  qbeta(p = c(min.theta.quantile, max.theta.quantile),
+        shape1 = alpha.1, shape2 = beta.1)
+
+theta.range.2 <-
+  qbeta(p = c(min.theta.quantile, max.theta.quantile),
+        shape1 = alpha.2, shape2 = beta.2)
+
+# Since transformation becomes unbounded at 1, restrict plotting range
+theta.range.1 <-
+  c(pmax(theta.range.1[1], min.theta),
+    pmin(theta.range.1[2], max.theta))
+
+theta.range.2 <-
+  c(pmax(theta.range.2[1], min.theta),
+    pmin(theta.range.2[2], max.theta))
+
+# Get quantiles of transformed thetas
+thetas.1 <-
+  rbeta(n = 1e6, shape1 = alpha.1, shape2 = beta.1)
+thetas.2 <-
+  rbeta(n = 1e6, shape1 = alpha.2, shape2 = beta.2)
+
+prior.theta <-
+  bind_rows(
+    data.frame(theta = seq(from = theta.range.1[1],
+                           to = theta.range.1[2],
+                           length.out = n.points),
+               Component = 1) %>%
+      dplyr::mutate(d.theta = dbeta(x = theta, shape1 = alpha.1,
+                                    shape2 = beta.1)),
+    data.frame(theta = seq(from = theta.range.2[1],
+                           to = theta.range.2[2],
+                           length.out = n.points),
+               Component = 2) %>%
+      dplyr::mutate(d.theta = dbeta(x = theta, shape1 = alpha.2,
+                                    shape2 = beta.2))
+  ) %>%
+  dplyr::mutate(Component = factor(Component))
+
+prior.theta.max <-
+  pmin(prior.y.max, 
+       max(prior.theta$d.theta))
+
+
+# Get plotting parameters for component 1
+n.finite.gammas.1 <- sum(!(thetas.1 %in% 0:1))
+
+if(n.finite.gammas.1 < 1) {
+  log.transform.gamma.1 <- TRUE
+  
+  prior.gamma.1 <-
+    expand.grid(gamma = seq(min.log.gamma, max.log.gamma, length.out = 10),
+                d.gamma = NaN,
+                method = "MML",
+                r.k = r.k.range) %>%
+    dplyr::mutate(r.k = factor(x = r.k),
+                  Component = 1)
+} else {
+  
+  # Determine scale of gamma - May not be finite. Adjust as necessary
+  log.transform.gamma.1 <- FALSE
+  gamma.range.1 <- NA
+  
+  gamma.range.1[1] <- 
+    pmin(quantile(x = thetas.1/(r.k.range[1]*(1 - thetas.1)),
+                  p = min.gamma.quantile),
+         quantile(x = thetas.1/(r.k.range[3]*(1 - thetas.1)),
+                  p = min.gamma.quantile))
+  gamma.range.1[2] <- 
+    pmax(quantile(x = thetas.1/(r.k.range[1]*(1 - thetas.1)),
+                  p = max.gamma.quantile),
+         quantile(x = thetas.1/(r.k.range[3]*(1 - thetas.1)),
+                  p = max.gamma.quantile))
+  
+  if(is.finite(diff(gamma.range.1))) {
+    if(diff(gamma.range.1) > range.transform.threshold) {
+      log.transform.gamma.1 <- TRUE
+      
+      gamma.range.1[1] <- 
+        pmin(quantile(x = log(thetas.1) - log(r.k.range[1]*(1 - thetas.1)),
+                      p = min.gamma.quantile),
+             quantile(x = thetas.1/(r.k.range[3]*(1 - thetas.1)),
+                      p = min.gamma.quantile))
+      gamma.range.1[2] <- 
+        pmax(quantile(x = log(thetas.1) - log(r.k.range[1]*(1 - thetas.1)),
+                      p = max.gamma.quantile),
+             quantile(x = thetas.1/(r.k.range[3]*(1 - thetas.1)),
+                      p = max.gamma.quantile))
+      gamma.range.1 <-
+        c(pmax(gamma.range.1[1], min.log.gamma),
+          pmin(gamma.range.1[2], max.log.gamma))
+    }
+    
+    
+    prior.gamma.1 <-
+      data.frame(expand.grid(gamma = seq(from = gamma.range.1[1],
+                                         to = gamma.range.1[2],
+                                         length.out = n.points),
+                             r.k = r.k.range),
+                 Component = 1) %>%
+      dplyr::mutate(d.gamma = 
+                      if(log.transform.gamma.1){
+                        d.log.pr(x = gamma, shape1 = alpha.1, 
+                                 shape2 = beta.1, r = r.k)
+                      } else {
+                        d.pr(x = gamma, shape1 = alpha.1, 
+                             shape2 = beta.1, r = r.k) 
+                      })
+  } else { # Range is Infinite
+    prior.gamma.1 <-
+      data.frame(expand.grid(gamma = c(0, 10^seq(0:4)),
+                             r.k = r.k.range),
+                 Component = 1,
+                 d.log.pr = Inf,
+                 d.pr = Inf)
+  }
+}
+
+
+
+
+
+# Get plotting parameters for component 2
+n.finite.gammas.2 <- sum(!(thetas.2 %in% 0:1))
+
+if(n.finite.gammas.2 < 1) {
+  log.transform.gamma.2 <- TRUE
+  
+  prior.gamma.2 <-
+    expand.grid(gamma = seq(min.log.gamma, max.log.gamma, length.out = 10),
+                d.gamma = NaN,
+                method = "MML",
+                r.k = r.k.range) %>%
+    dplyr::mutate(r.k = factor(x = r.k),
+                  Component = 1)
+} else {
+  
+  # Determine scale of gamma - May not be finite. Adjust as necessary
+  log.transform.gamma.2 <- FALSE
+  gamma.range.2 <- NA
+  
+  gamma.range.2[1] <- 
+    pmin(quantile(x = thetas.2/(r.k.range[1]*(1 - thetas.2)),
+                  p = min.gamma.quantile),
+         quantile(x = thetas.2/(r.k.range[3]*(1 - thetas.2)),
+                  p = min.gamma.quantile))
+  gamma.range.2[2] <- 
+    pmax(quantile(x = thetas.2/(r.k.range[1]*(1 - thetas.2)),
+                  p = max.gamma.quantile),
+         quantile(x = thetas.2/(r.k.range[3]*(1 - thetas.2)),
+                  p = max.gamma.quantile))
+  
+  if(is.finite(diff(gamma.range.2))) {
+    if(diff(gamma.range.2) > range.transform.threshold) {
+      log.transform.gamma.2 <- TRUE
+      
+      gamma.range.2[1] <- 
+        pmin(quantile(x = log(thetas.2) - log(r.k.range[1]*(1 - thetas.2)),
+                      p = min.gamma.quantile),
+             quantile(x = thetas.2/(r.k.range[3]*(1 - thetas.2)),
+                      p = min.gamma.quantile))
+      gamma.range.2[2] <- 
+        pmax(quantile(x = log(thetas.2) - log(r.k.range[1]*(1 - thetas.2)),
+                      p = max.gamma.quantile),
+             quantile(x = thetas.2/(r.k.range[3]*(1 - thetas.2)),
+                      p = max.gamma.quantile))
+      gamma.range.2 <-
+        c(pmax(gamma.range.2[1], min.log.gamma),
+          pmin(gamma.range.2[2], max.log.gamma))
+    }
+    
+    
+    prior.gamma.2 <-
+      data.frame(expand.grid(gamma = seq(from = gamma.range.2[1],
+                                         to = gamma.range.2[2],
+                                         length.out = n.points),
+                             r.k = r.k.range),
+                 Component = 2) %>%
+      dplyr::mutate(d.gamma = 
+                      if(log.transform.gamma.2){
+                        d.log.pr(x = gamma, shape1 = alpha.2, 
+                                 shape2 = beta.2, r = r.k)
+                      } else {
+                        d.pr(x = gamma, shape1 = alpha.2, 
+                             shape2 = beta.2, r = r.k) 
+                      })
+  } else { # Range is Infinite
+    prior.gamma.2 <-
+      data.frame(expand.grid(gamma = c(0, 10^seq(0:4)),
+                             r.k = r.k.range),
+                 Component = 2,
+                 d.log.pr = Inf,
+                 d.pr = Inf)
+  }
+}
+
+prior.gamma <-
+  bind_rows(prior.gamma.1 %>%
+              dplyr::mutate(r.k = factor(x = r.k)),
+            prior.gamma.2 %>%
+              dplyr::mutate(r.k = factor(x = r.k)))
+
+
+prior.gamma.max.1 <-
+  pmin(prior.y.max, 
+       prior.gamma %>%
+         dplyr::filter(Component == 1) %>%
+         dplyr::pull(d.gamma) %>%
+         max)
+
+prior.gamma.max.2 <-
+  pmin(prior.y.max, 
+       prior.gamma %>%
+         dplyr::filter(Component == 2) %>%
+         dplyr::pull(d.gamma) %>%
+         max)
+
+if(is.infinite(prior.gamma.max.1) | is.nan(prior.gamma.max.1))
+  prior.gamma.max.1 <- prior.y.max
+if(is.infinite(prior.gamma.max.2) | is.nan(prior.gamma.max.1)) prior.gamma.max.2 <- prior.y.max
+
+prior.mixture <-
+  data.frame(sim.value = 1:n.mc.prior,
+             theta =
+               c(rbeta(n = round(n.mc.prior*(1 - epsilon.hat)),
+                     shape1 = alpha.1, shape2 = beta.1),
+                 rbeta(n = n.mc.prior - round(n.mc.prior*(1 - epsilon.hat)),
+                     shape1 = alpha.2, shape2 = beta.2))) %>%
+  dplyr::mutate(is.finite = !(theta %in% 0:1),
+                gamma.1 = theta/(r.k.range[1]*(1 - theta)),
+                gamma.2 = theta/(r.k.range[2]*(1 - theta)),
+                gamma.3 = theta/(r.k.range[3]*(1 - theta)))
+
+if(log.transform.gamma.1 | log.transform.gamma.2) {
+  prior.mixture$gamma.1 <- log(prior.mixture$gamma.1)
+  prior.mixture$gamma.2 <- log(prior.mixture$gamma.2)
+  prior.mixture$gamma.3 <- log(prior.mixture$gamma.3)
+}
+
+if(sum(prior.mixture$is.finite) < 1) {
+  prior.mix.1 <-
+    prior.mix.2 <-
+    prior.mix.3 <-
+    data.frame(gamma = seq(min.log.gamma, max.log.gamma, length.out = 10),
+               d.gamma = NaN)
+  
+  prior.mix.1$r.k <- 1
+  prior.mix.2$r.k <- 2
+  prior.mix.3$r.k <- 3
+  
+  prior.mix <-
+    bind_rows(prior.mix.1, prior.mix.2, prior.mix.3) %>%
+    dplyr::mutate(r.k = factor(r.k.range[r.k]))
+  
+} else { #
+  prior.mix.1 <-
+    with(density(x = prior.mixture$gamma.1),
+         data.frame(gamma = x,
+                    d.gamma = y,
+                    r.k = 1))
+  
+  prior.mix.2 <-
+    with(density(x = prior.mixture$gamma.2),
+         data.frame(gamma = x,
+                    d.gamma = y,
+                    r.k = 2))
+  
+  prior.mix.3 <-
+    with(density(x = prior.mixture$gamma.3),
+         data.frame(gamma = x,
+                    d.gamma = y,
+                    r.k = 3))
+  prior.mix <-
+    bind_rows(prior.mix.1, prior.mix.2, prior.mix.3) %>%
+    dplyr::filter(d.gamma > 1e-3) %>%
+    dplyr::mutate(r.k = factor(r.k.range[r.k]))
+}
+
+
+
+
+p1 <-
+  ggplot(data = prior.theta) +
+  geom_ribbon(aes(ymax = d.theta,
+                  ymin = 0,
+                  x = theta,
+                  fill = Component,
+                  color = Component),
+              alpha = 0.5) +
+  theme_bw() +
+  coord_cartesian(ylim = c(0, prior.theta.max)) +
+  ylab(expression(paste("Probability Density: f(",
+                        theta[c], "|", alpha[c],~beta[c], ")"))) +
+  xlab(expression(paste("Transformed Prevalence Ratio: ", theta[k], "=", 
+                        frac(r[k]~gamma[k], (1 + r[k]~gamma[k]))))) +
+  theme(legend.position = "bottom") +
+  ggtitle(bquote(paste("Pr{", theta[1], "|", alpha[1], " = ", .(alpha.1),
+                       ", ", beta[1], " = ", .(beta.1),
+                       "} and Pr{", theta[2], "|", alpha[2], " = ", .(alpha.2),
+                       ", ", beta[2], " = ", .(beta.2), "}")))
+
+
+if(log.transform.gamma.2 | log.transform.gamma.2) {
+  gamma.x.label <- 
+    expression(paste("Prevalence Ratio: ", log(gamma[k]), "=", 
+                     log(theta[k]/r[k]~(1 - theta[k]))))
+  gamma.y.label <-
+    expression(paste("Probability Density: log (", gamma[k], ")"))
+  
+  
+} else {
+  gamma.x.label <- 
+    expression(paste("Prevalence Ratio: ", gamma[k], "=", 
+                     frac(theta[k], r[k]~(1 - theta[k]))))
+    gamma.y.label <-
+    expression(paste("Probability Density: ", gamma[k]))
+}
+
+mix.x.range <- quantile(x = prior.mixture$gamma,
+                        p = c(min.gamma.quantile, max.gamma.quantile))
+
+
+p2 <-
+  ggplot(data = prior.mix) +
+  geom_line(aes(x = gamma,
+                y = d.gamma,
+                group = r.k,
+                color = r.k),
+            alpha = 0.5) +
+  theme_bw() +
+  ylab(gamma.y.label) +
+  xlab(gamma.x.label) +
+  theme(legend.position = "bottom") +
+  ggtitle("Mixture Prior Probability Density")
+
+
+
+gamma.x.label <-
+  ifelse(test = log.transform.gamma.1,
+         yes = expression(paste("Prevalence Ratio: ", log(gamma[k]), "=", 
+                        log(theta[k]/r[k]~(1 - theta[k])))),
+         no = expression(paste("Prevalence Ratio: ", gamma[k], "=", 
+                        frac(theta[k], r[k]~(1 - theta[k])))))
+  
+gamma.y.label <-
+  ifelse(test = log.transform.gamma.1,
+         yes = expression(paste("Probability Density: g(log(",
+                 gamma[k], ")|", alpha[1],~beta[1],~r[k], ")")),
+         no = expression(paste("Probability Density: g(",
+                               gamma[k], "|", alpha[1],~beta[1],~r[k], ")")))
+
+p3 <-
+  ggplot(data = prior.gamma %>%
+           dplyr::filter(Component == 1),
+         aes(y = d.gamma,
+             x = gamma,
+             group = r.k,
+             col = r.k)) +
+  geom_line() +
+  theme_bw() +
+  coord_cartesian(ylim = c(0, prior.gamma.max.1)) +
+  ylab(gamma.y.label) +
+  xlab(gamma.x.label) +
+  theme(legend.position = "bottom") +
+  ggtitle(bquote(paste("Pr{", gamma[k], "|", alpha[1], " = ", .(alpha.1),
+                       ", ", beta[1], " = ", .(beta.1), "} - Component 1")))
+
+gamma.x.label <-
+  ifelse(test = log.transform.gamma.2,
+         yes = expression(paste("Prevalence Ratio: ", log(gamma[k]), "=", 
+                        log(theta[k]/r[k]~(1 - theta[k])))),
+         no = expression(paste("Prevalence Ratio: ", gamma[k], "=", 
+                        frac(theta[k], r[k]~(1 - theta[k])))))
+  
+gamma.y.label <-
+  ifelse(test = log.transform.gamma.2,
+         yes = expression(paste("Probability Density: g(log(",
+                 gamma[k], ")|", alpha[2],~beta[2],~r[k], ")")),
+         no = expression(paste("Probability Density: g(",
+                               gamma[k], "|", alpha[2],~beta[2],~r[k], ")")))
+
+
+p4 <-
+  ggplot(data = prior.gamma %>%
+           dplyr::filter(Component == 2),
+         aes(y = d.gamma,
+             x = gamma,
+             group = r.k,
+             col = r.k)) +
+  geom_line() +
+  theme_bw() +
+  coord_cartesian(ylim = c(0, prior.gamma.max.2)) +
+  ylab(gamma.y.label) +
+  xlab(gamma.x.label) +
+  theme(legend.position = "bottom") +
+  ggtitle(bquote(paste("Pr{", gamma[k], "|", alpha[2], " = ", .(alpha.2),
+                       ", ", beta[2], " = ", .(beta.2), "} - Component 2")))
+
+grid.arrange(p1, p2, p3, p4,
+             nrow = 2, ncol = 2)
+```
+
+
+
+
+
+
+
+
+## Posterior Distribution: Prevalence Ratios
+
+```{r Plot Posteriors, fig.width = fig.w.2x, warning = FALSE}
+for(i in unique(beta.binom.results$plot.group)){
+  
+  plot.group <-
+    beta.binom.results %>%
+    dplyr::filter(plot.group == i)
+  
+  order.of.presentation <-
+    plot.group %>%
+    dplyr::select(id, plot.order) %>%
+    dplyr::distinct() %>%
+    dplyr::mutate(plot.order = rank(plot.order))
+  
+  # Order ID by the ranking within the plot group
+  plot.group <-
+    plot.group %>%
+    dplyr::mutate(id = factor(x = id,
+                              levels = order.of.presentation$id))
+  
+  l.plot.group <-
+    plot.group %>%
+    dplyr::select(id, model, gamma.hat, posterior_mean, pq.0.5) %>%
+    dplyr::rename("Posterior Median" = pq.0.5,
+                  "Posterior Mean" = posterior_mean,
+                  "Direct Estimate" = gamma.hat) %>%
+    tidyr::gather(key = "Estimator", value = "estimate", -id, -model)
+  
+  limit.l <- with(plot.group, min(c(gamma.hat, pq.0.05), na.rm = TRUE)) %>%
+    max(c(., posterior.y.min))
+  
+  if(is.infinite(limit.l)) limit.l <- posterior.y.min
+  
+  limit.u <- with(plot.group, max(c(gamma.hat, pq.0.95), na.rm = TRUE)) %>%
+    min(c(., posterior.y.max))
+  
+  print(ggplot(data = plot.group,
+               aes(x = id,
+                   group = model,
+                   color = model)) +
+          geom_errorbar(aes(ymin = pq.0.01, ymax =  pq.0.025),
+                        size = interval.sizes[1], width = 0,
+                        alpha = interval.alpha[1],
+                        position = position_dodge(width = h.separation)) +
+          geom_errorbar(aes(ymin = pq.0.025, ymax =  pq.0.05),
+                        size = interval.sizes[2], width = 0,
+                        alpha = interval.alpha[2],
+                        position = position_dodge(width = h.separation)) +
+          geom_errorbar(aes(ymin = pq.0.05, ymax =  pq.0.1),
+                        size = interval.sizes[3], width = 0,
+                        alpha = interval.alpha[3],
+                        position = position_dodge(width = h.separation)) +
+          geom_errorbar(aes(ymin = pq.0.1, ymax =  pq.0.25),
+                        size = interval.sizes[4], width = 0,
+                        alpha = interval.alpha[4],
+                        position = position_dodge(width = h.separation)) +
+          geom_errorbar(aes(ymin = pq.0.25, ymax =  pq.0.5),
+                        size = interval.sizes[5], width = 0,
+                        alpha = interval.alpha[5],
+                        position = position_dodge(width = h.separation)) +
+          geom_errorbar(aes(ymin = pq.0.5, ymax =  pq.0.75),
+                        size = interval.sizes[6], width = 0,
+                        alpha = interval.alpha[6],
+                        position = position_dodge(width = h.separation)) +
+          geom_errorbar(aes(ymin = pq.0.75, ymax =  pq.0.9),
+                        size = interval.sizes[7], width = 0,
+                        alpha = interval.alpha[7],
+                        position = position_dodge(width = h.separation)) +
+          geom_errorbar(aes(ymin = pq.0.9, ymax =  pq.0.95),
+                        size = interval.sizes[8], width = 0,
+                        alpha = interval.alpha[8],
+                        position = position_dodge(width = h.separation)) +
+          geom_errorbar(aes(ymin = pq.0.95, ymax =  pq.0.975),
+                        size = interval.sizes[9], width = 0,
+                        alpha = interval.alpha[9],
+                        position = position_dodge(width = h.separation)) +
+          geom_errorbar(aes(ymin = pq.0.975, ymax =  pq.0.99),
+                        size = interval.sizes[10], width = 0,
+                        alpha = interval.alpha[10],
+                        position = position_dodge(width = h.separation)) +
+          geom_point(data = l.plot.group,
+                     aes(y = estimate,
+                         x = id,
+                         group = model,
+                         shape = Estimator),
+                     color = "black",
+                     position = position_dodge(width = h.separation)) +
+          scale_shape_manual(values=c(1, 3, 4)) +
+          geom_hline(yintercept = 1) +
+          coord_cartesian(ylim = c(limit.l, limit.u)) +
+          xlab("Variant") +
+          ylab("Posterior Distribution:\nPrevalence Ratio") +
+          theme_bw() +
+          theme(axis.text.y = element_text(size = axis.text.size),
+                axis.text.x = element_text(angle = 90, vjust = 0.5,
+                                           hjust = 1,
+                                           size = axis.text.size),
+                axis.title = element_text(size = axis.title.size,
+                                          face = "bold"),
+                legend.text = element_text(size = legend.text.size),
+                legend.title = element_text(size = legend.title.size,
+                                            face = "bold"),
+                legend.position = "bottom",
+                legend.box = "vertical"))
+}
+```
