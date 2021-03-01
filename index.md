@@ -2,7 +2,11 @@
 title: BayPR: Empirical Bayes Inference for Prevalence Ratios
 theme: jekyll-theme-cayman
 filename: index.md
---- 
+---
+
+{% for page in site.pages %}
+    <a href={{ page.filename }}>{{ page.title }}</a>
+{% endfor %}
 
 # BayPR: Empirical Bayes Inference for Prevalence Ratios
 
