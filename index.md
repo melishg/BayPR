@@ -4,10 +4,6 @@ theme: jekyll-theme-cayman
 filename: index.md
 ---
 
-{% for page in site.pages %}
-    <a href={{ page.filename }}>{{ page.title }}</a>
-{% endfor %}
-
 # BayPR: Empirical Bayes Inference for Prevalence Ratios
 
 This package estimates the prevalence ratio of an exposure in a population of cases and a reference population using samples from each population. This can be applied to assess the disease-causing liability of DNA variants, as described in Collaco et al, 2021.
@@ -19,7 +15,7 @@ This package estimates the prevalence ratio of an exposure in a population of ca
 
 All models are fit using the `optimx` function in the [optimx](https://cran.r-project.org/web/packages/optimx/index.html) package. Dependencies can be installed using `install.packages` or using the 'Packages' panel in Rstudio. Any additional dependencies are only used to arrange, plot, and report model output.
 
-Download R code: https://github.com/melishg/BayPR/archive/main.zip
+Download R code: [https://github.com/melishg/BayPR/archive/main.zip](https://github.com/melishg/BayPR/archive/main.zip)
 
 
 ### Files Included:
