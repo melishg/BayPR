@@ -19,7 +19,7 @@ This package estimates the prevalence ratio of an exposure in a population of ca
 
 All models are fit using the `optimx` function in the [optimx](https://cran.r-project.org/web/packages/optimx/index.html) package. Dependencies can be installed using `install.packages` or using the 'Packages' panel in Rstudio. Any additional dependencies are only used to arrange, plot, and report model output.
 
-Download `source-bayes_prevalence_ratio.r` from Github, and use the `source` function to read its functions into the R workspace.
+Download R code: https://github.com/melishg/BayPR/archive/main.zip
 
 
 ### Files Included:
