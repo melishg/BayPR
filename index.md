@@ -1,5 +1,6 @@
 ---
 title: BayPR: Empirical Bayes Inference for Prevalence Ratios
+theme: jekyll-theme-cayman
 filename: index.md
 --- 
 
