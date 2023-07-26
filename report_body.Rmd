@@ -87,15 +87,6 @@ beta.binom.results <-
 write.csv(x = beta.binom.results,
           file = file.path(output.dir, results.csv),
           row.names = FALSE)
-
-plotoutput <- # Output file for result spreadsheet
-  paste0(output.dir, "/", dataset.name, "_Results_", r.k.factor, "_v", code.version, ".png")
-png(plotoutput)
-ggplot(beta.binom.results, aes(x = 1- posterior.probability.2, y = y.1)) + geom_point() +
-    scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x),
-                  labels = trans_format("log10", math_format(10^.x))) + ylab("y.1") + xlab("Probability of 'Disease'") + ggtitle(dataset.name)
-    theme_bw()
-dev.off()
 ```
 
 ```{r Save Results, eval = run.beta.binom & continue, echo = FALSE}
