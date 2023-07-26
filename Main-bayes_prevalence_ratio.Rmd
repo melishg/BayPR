@@ -235,20 +235,26 @@ if(file.exists(beta.binom.rda.path)){
     input.data <-
       input.data %>%
       dplyr::filter(include == TRUE) %>%
-      dplyr::mutate(t.k = # Number of events in Cases/Controls
-                      get(!!y.1)/get(!!y.0),
-                    r.k = # Case/Control sample size ratio
-                      get(!!n.1)/get(!!n.0),
-                    r.k.ratio = # Median ratio over SNPs
-                      r.k/median(r.k, na.rm = TRUE),
-                    r.k.ratio.flag = r.k.ratio < r.k.lower |
-                      r.k.ratio > r.k.upper)
+      dplyr::mutate(
+        t.k = # Number of events in Cases/Controls
+          get(!!y.1)/get(!!y.0),
+        r.k = # Case/Control sample size ratio
+          get(!!n.1)/get(!!n.0),
+        r.k.ratio = # Median ratio over SNPs
+          r.k/median(r.k, na.rm = TRUE),
+        r.k.ratio.flag = r.k.ratio < r.k.lower |
+          r.k.ratio > r.k.upper
+      ) %>%
+      dplyr::filter(
+        !r.k.ratio.flag
+      )
     
     input.data.excluded <-
-      input.data.all %>%
-      dplyr::filter(!get(x = !!event.label) %in%
-                      get(x = !!event.label,
-                          pos = input.data))
+      dplyr::anti_join(
+        x = input.data.all,
+        y = input.data,
+        by = c(event.label)
+      )
     
     # Check for counts greater than number of observations
     if(sum(input.data$error.cases, na.rm = TRUE) > 0) {
